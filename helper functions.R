@@ -205,3 +205,169 @@ ggplot_pdp_no_color <- function(obj, features) {
   
 }
 
+
+
+panel_hist_fn <- function(df){
+  df %>% select(where(is.numeric)) %>%  gather() %>% 
+    ggplot(aes(x=value)) + 
+    geom_histogram(fill="steelblue", alpha=.7, bins = 8) +
+    theme_minimal() +
+    facet_wrap(~key, scales="free")
+}
+
+
+
+joined_imputed_fn <- function(x){
+  updated <- x %>%
+    mutate(
+      weight_kg = timetk::ts_impute_vec(weight_kg),
+      sleep_index = sleep_hours * sleep_qualilty,
+      across(c(duration_min:wrkts_per_day, previous_training_days), ~ifelse(is.na(duration_min), 0, .)),
+      across(c(where(is.numeric)),  ~ifelse(. == "NaN", NA, .)),
+      across(c(where(is.numeric)),  ~ifelse(. == "Inf", NA, .)),
+      across(c(where(is.numeric)),  ~ifelse(. == "-Inf", NA, .)),
+      
+    )
+  
+  impute_1 <-   recipe(TF ~ ., data = updated) %>% 
+    update_role(date, fasted, weight_kg, new_role = "id") %>% 
+    step_impute_linear(contains("diet"),  impute_with = imp_vars(contains("diet"),  tss, duration_min, load)) %>% 
+    step_impute_median(all_numeric_predictors(), -c(CARB_before, sleep_index, RPE_weighted, RPE_max)) %>%   
+    prep() %>% juice() %>% 
+    mutate(
+      sleep_index = sleep_hours* sleep_qualilty
+    )
+  
+  impute_2 <-   recipe(zq_score ~ ., data = impute_1) %>%
+    update_role(date, fasted, weight_kg, new_role = "id") %>%
+    step_impute_linear(TF,  impute_with = imp_vars(zq_score, soreness, stress, hrv)) %>%
+    prep() %>% juice() %>% 
+    mutate(
+      TF = ifelse(RPE_max == "NA", NA, TF),
+      across(fasted:mode_Other, ~as.character(.)),
+      across(fasted:mode_Other, ~ifelse(duration_min == 0, "0", .)),
+      across(fasted:mode_Other, ~as.factor(.)),
+    )
+  
+  impute_2 
+  
+}
+
+
+feat_eng_fn1 <- function(x){
+  
+  total_missing <- colSums(is.na(joined_tbl)) %>% as.data.frame() %>% rownames_to_column(.) %>% 
+    rename(numb_missing = ".") %>% 
+    filter(rowname != "TF", rowname != "CARB_before", rowname != "weight_kg", rowname != "exercise_rpe_max") %>% 
+    summarise(total_NA = sum(numb_missing)) %>% 
+    pull(total_NA)
+  
+  total_points <- ncol(joined_tbl)*nrow(joined_tbl)
+  
+  percent_missing_data <- round(total_missing/total_points * 100,1)
+  
+  diet_missing <- colSums(is.na(diet_daily_tbl)) %>% as.data.frame() %>% rownames_to_column(.) %>% 
+    rename(diet_missing = ".") %>% 
+    filter(rowname == "diet_kcal") %>% 
+    pull(diet_missing)
+  
+  percent_missing_diet <- round(diet_missing/nrow(joined_tbl) * 100,1)
+  
+  
+  x %>% 
+    tk_augment_timeseries_signature() %>% 
+    select(-c(index.num:wday.xts, mday:mday7)) %>% 
+    mutate(
+      #cleaning
+      across(where(is.numeric), ~ifelse(. == -Inf, NA, .)),
+      across(where(is.numeric), ~ifelse(is.nan(.), NA, .)),
+      sleep_index = sleep_hours*sleep_qualilty, 
+      study_day = 1:n(),
+      
+      #rolling
+      roll_7d_tss = slidify_vec(tss, .f = mean, .period = 7, .align = "right", .partial = T ),#
+      roll_7d_tss_EWMA = pracma::movavg(tss, n = 7, type = "e"),  #exponential weighted average tss
+      roll_7d_sd_tss = slidify_vec(tss, .f = sd, .period = 7, .align = "right", .partial = T ),  #used for calculation
+      roll_7d_tss_total = slidify_vec(tss, .f = sum, .period = 7, .align = "right", .partial = T ), #used for calculation
+      
+      roll_7d_exercise_load_total = slidify_vec(load, .f = sum, .period = 7, .align = "right", .partial = T ),#used for calculation
+      roll_7d_exercise_load = slidify_vec(load, .f = mean, .period = 7, .align = "right", .partial = T ),#
+      roll_7d_exercise_load_sd = slidify_vec(load, .f = sd, .period = 7, .align = "right", .partial = T ),##used for calculation
+      roll_7d_exercise_load_EWMA = pracma::movavg(load, n = 7, type = "e"),  #exponential weighted average tss
+      
+      roll_monotony = roll_7d_exercise_load/roll_7d_exercise_load_sd,
+      roll_strain = roll_monotony*roll_7d_exercise_load_total,
+      
+      roll_7d_carb_g = slidify_vec(diet_carb_g, .f = mean, .period = 7, .align = "right", .partial = T ),#
+      roll_7d_carb_g_sd = slidify_vec(diet_carb_g, .f = sd, .period = 7, .align = "right", .partial = T ), #
+      roll_carb_monotony = roll_7d_carb_g/roll_7d_carb_g_sd,
+      
+      #hrv
+      hrv_lag = lag_vec(hrv),   #used for calculation
+      hrv_chng = hrv-hrv_lag,  #change from yesterday
+      #next_day_hrv_chng = lead_vec(delta_hrv_chng), #change for next day
+      roll_7d_hrv_MA = slidify_vec(hrv, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+      #pulse
+      pulse_lag = lag_vec(pulse),   #used for calculation
+      delta_pulse_chng = pulse-pulse_lag,  #change from yesterday
+      
+      #subject info
+      subject_missing_data = percent_missing_data,
+      subject_missing_diet = percent_missing_diet,
+      subject_weekly_training_h = sum(duration_min)/ nrow(.)/60 * 7,
+      
+      #diet add-ons
+      diet_kcal_kg = diet_kcal/weight_kg,
+      diet_carb_g_kg = diet_carb_g/weight_kg,
+      diet_fat_g_kg = diet_fat_g/weight_kg,
+      diet_protein_g_kg = diet_protein_g/weight_kg,
+      
+      
+    ) %>%
+    slice(-1) %>% 
+    
+    mutate(
+      roll_7d_exercise_load_max =  slidify_vec(load, .f = max, na.rm = T, .period = 7, .align = "right", .partial = T ), 
+      roll_7d_exercise_rpe_max =  slidify_vec(RPE_max, .f = max, na.rm = T, .period = 7, .align = "right", .partial = T ), 
+      
+      roll_7d_avg_hrv_delta = slidify_vec(hrv_chng, .f = mean, .period = 7, .align = "right", .partial = T ),
+      roll_7d_avg_pulse_delta = slidify_vec(delta_pulse_chng, .f = mean, .period = 7, .align = "right", .partial = T ), 
+      roll_7d_sleep_hours = slidify_vec(sleep_hours, .f = mean, .period = 7, .align = "right", .partial = T ), 
+      roll_7d_sleep_index = slidify_vec(sleep_index, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+      roll_3d_diet_carb_g_kg = slidify_vec(diet_carb_g_kg, .f = mean, .period = 3, .align = "right", .partial = T ),
+      roll_7d_diet_carb_g_kg = slidify_vec(diet_carb_g_kg, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+      
+      roll_3d_diet_kcal_kg = slidify_vec(diet_kcal_kg, .f = mean, .period = 3, .align = "right", .partial = T ),
+      roll_7d_diet_kcal_kg = slidify_vec(diet_kcal_kg, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+      roll_3d_diet_protein_g_kg = slidify_vec(diet_protein_g_kg, .f = mean, .period = 3, .align = "right", .partial = T ),
+      roll_7d_diet_protein_g_kg = slidify_vec(diet_protein_g_kg, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+      roll_3d_diet_fat_g_kg = slidify_vec(diet_fat_g_kg, .f = mean, .period = 3, .align = "right", .partial = T ),
+      roll_7d_diet_fat_g_kg = slidify_vec(diet_fat_g_kg, .f = mean, .period = 7, .align = "right", .partial = T ),
+      
+    ) %>% 
+    
+    select(-c(roll_7d_tss_total, roll_7d_sd_tss,  hrv_lag, pulse_lag, roll_7d_exercise_load_sd, roll_7d_exercise_load_total)) %>% 
+    
+    
+    rename_with(~str_c("AM_", .), c(soreness, stress, zq_score, sleep_qualilty)) %>%
+    rename_with(~str_c("exercise_", .), c(duration_min, RPE_max, RPE_weighted, load, tss, wrkts_per_day, CARB_before, TF, fasted, contains("mode_"))) %>%
+    
+    
+    select(sort(tidyselect::peek_vars())) %>% 
+    relocate(contains("hrv"), .after = everything()) %>% 
+    relocate(contains("pulse"), .before = hrv) %>% 
+    relocate(contains("subject_"), .after = everything()) %>% 
+    mutate(
+      across(c(where(is.numeric)),  ~ifelse(. == "NaN", NA, .)),
+      across(c(where(is.numeric)),  ~ifelse(. == "Inf", NA, .)),
+      across(c(where(is.numeric)),  ~ifelse(. == "-Inf", NA, .)),
+    ) 
+  
+  
+}
+
