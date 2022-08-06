@@ -6,4 +6,4 @@ Data from the study is still being used and analyzed for other purposes, so **a 
 
 A series of models were constructed for the paper. Sample code is provided for a single outcome variable (AM PRS score - labeled as AM_zq_score), but the same code was used for the other outcome variables.
 
-An example of participant data is also included, with the steps used to combine the diet, training, and subjective measures into a single data file.
+An example of participant data is also included with the steps used to combine the diet, training, and subjective measures into a single data file.
