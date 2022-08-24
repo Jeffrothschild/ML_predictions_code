@@ -204,8 +204,7 @@ resampd <- fit_resamples(
 doParallel::stopImplicitCluster()
 
 
-resamp_metrics <- collect_predictions(resampd, summarize = T) %>% 
-    metrics(AM_zq_score, .pred)
+resamp_metrics <- resampd %>% collect_metrics()
 
 
 resamp_metrics
@@ -218,10 +217,10 @@ individ_test_pred <-
 
 
 individ_rmse <- resamp_metrics %>% 
-  filter(.metric == "rmse") %>% pull(.estimate) %>% round(.,1)
+  filter(.metric == "rmse") %>% pull(mean) %>% round(.,1)
 
 individ_rsq <- resamp_metrics %>% 
-  filter(.metric == "rsq") %>% pull(.estimate) %>% round(.,2)
+  filter(.metric == "rsq") %>% pull(mean) %>% round(.,2)
 
 max_dv <- max(individ_test_pred[[dependent_variable]])
 
