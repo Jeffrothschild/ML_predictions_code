@@ -12,7 +12,7 @@ conflict_prefer("select", "dplyr")
 
 source("helper functions.R")
 
-subject <-   "529"
+subject <-   "529"  # select single subject
 zq_version <- "normal" # alternatively could have used box-cox transformations
 tf_version <- "normal" 
 

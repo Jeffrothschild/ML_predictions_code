@@ -17,23 +17,6 @@ lm_boots_rmse_fn_zq <- function(data){
   metrics
   
 }
-lm_boots_rmse_fn_tf <- function(data){
-  
-  boots <- bootstraps(data,  times = 500)
-  lm_rec <- recipe(exercise_TF ~ AM_zq_score + exercise_CARB_before + lag7_roll_strain  +
-                     lag2_AM_zq_score + exercise_duration_min, data) 
-  lm_wf <- workflow() %>%
-    add_recipe(lm_rec) %>%
-    add_model(linear_reg() %>%
-                set_engine("lm"))
-  
-  resamps <- fit_resamples(lm_wf, boots, control = control_resamples(parallel_over = "everything"))
-  
-  metrics <- resamps %>% collect_metrics() # %>% filter(.metric == "rmse") %>% pull(mean)
-  
-  metrics
-  
-}
 lm_boots_rmse_fn_hrv <- function(data){
   
   boots <- bootstraps(data, times = 500)
@@ -68,22 +51,6 @@ intercept_boots_rmse_fn_zq <- function(data){
   metrics
   
 }
-intercept_boots_rmse_fn_tf <- function(data){
-  
-  boots <- bootstraps(data,  times = 500)
-  lm_rec <- recipe(exercise_TF ~ 1, data) 
-  lm_wf <- workflow() %>%
-    add_recipe(lm_rec) %>%
-    add_model(linear_reg() %>%
-                set_engine("lm"))
-  
-  resamps <- fit_resamples(lm_wf, boots, control = control_resamples(parallel_over = "everything"))
-  
-  metrics <- resamps %>% collect_metrics()  %>% filter(.metric == "rmse") %>% pull(mean)
-  
-  metrics
-  
-}
 intercept_boots_rmse_fn_hrv <- function(data){
   
   boots <- bootstraps(data, times = 500)
@@ -110,10 +77,8 @@ individ_lm_map_tbl <- group_tbl %>%
   ungroup() %>% 
   mutate(
     zq_boots_metrics = map(data, ~ lm_boots_rmse_fn_zq(.x)),
-    tf_boots_metrics = map(data, ~ lm_boots_rmse_fn_tf(.x)),
     hrv_boots_metrics = map(data, ~ lm_boots_rmse_fn_hrv(.x)),
     zq_lm_intercept_rmse = map_dbl(data, ~ intercept_boots_rmse_fn_zq(.x)),
-    tf_lm_intercept_rmse = map_dbl(data, ~ intercept_boots_rmse_fn_tf(.x)),
     hrv_lm_intercept_rmse = map_dbl(data, ~ intercept_boots_rmse_fn_hrv(.x)),
     people = "Individual models"
   ) 
@@ -121,16 +86,12 @@ individ_lm_map_tbl <- group_tbl %>%
 
 boots_lm_metrics <- individ_lm_map_tbl %>% 
   unnest(zq_boots_metrics) %>% select(-c(people, .estimator, n:.config)) %>% pivot_wider(names_from = ".metric", values_from = "mean") %>% rename("zq_boots_rmse" = rmse, "zq_boots_rsq" = rsq) %>% 
-  
-  unnest(tf_boots_metrics) %>% select(-c(.estimator, n:.config)) %>% pivot_wider(names_from = ".metric", values_from = "mean") %>% rename("tf_boots_rmse" = rmse, "tf_boots_rsq" = rsq) %>% 
-  
   unnest(hrv_boots_metrics) %>% select(-c(.estimator, n:.config)) %>% pivot_wider(names_from = ".metric", values_from = "mean") %>% rename("hrv_boots_rmse" = rmse, "hrv_boots_rsq" = rsq) %>% 
   pivot_longer(zq_lm_intercept_rmse:hrv_boots_rsq) %>% 
   mutate(
     vars =  ifelse(str_detect(name, "intercept"), "intercept only", "top_5_from_stack"),
     dv = case_when(
       str_detect(name, "zq") ~ "AM PRS",
-      str_detect(name, "tf") ~ "Exercise TF",
       str_detect(name, "hrv") ~ "HRV change"),
     name = str_remove_all(name, "(zq_boots_)|(tf_boots_)|(hrv_boots_)|(zq_lm_intercept_)|(tf_lm_intercept_)|(hrv_lm_intercept_)")
   ) %>% 

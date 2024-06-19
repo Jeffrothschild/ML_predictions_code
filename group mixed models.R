@@ -12,8 +12,7 @@ tidymodels_prefer()
 library(multilevelmod)
 
 
-variables <- "top_5_from_stack"
-
+variables <- "top_5_from_main"
 
 fit_and_metrics_lmer_fn <- function(data){
   
@@ -25,11 +24,10 @@ fit_and_metrics_lmer_fn <- function(data){
   fixed.part <- paste(dv,iv )
   random.part <- " + (1|subject_id)"
   
+  n_subs <- length(unique(data$subject_id))
   
-  set.seed(3332)
-  group_split <- group_initial_split(data, group = subject_id)
-  group_train <- training(group_split)
-  group_test <- testing(group_split)
+  group_folds <- group_vfold_cv(data, group = subject_id, v = n_subs)
+  
   
   
   mixed_model_spec <- linear_reg() %>% set_engine("lmer")
@@ -38,23 +36,30 @@ fit_and_metrics_lmer_fn <- function(data){
     add_model(mixed_model_spec, formula = formula(paste(fixed.part, random.part))) %>%
     add_variables(outcomes = all_of(dependent_variable), predictors = colnames(group_lmer_tbl %>% dplyr::select(- all_of(dependent_variable))))
   
-  fit2 <- fit(mixed_model_wf, group_train)
-  fit_extract <- extract_fit_parsnip(fit2) 
+  fit2 <- fit_resamples(mixed_model_wf, group_folds, control = control_resamples(save_pred = TRUE))
+  fit_metrics <- collect_metrics(fit2)
+  fit_preds <- collect_predictions(fit2, summarize = T)
   
-  train_rmse <- performance::model_performance(fit_extract) %>% as_tibble() %>% pull(RMSE) %>%  round(.,2)
-  train_rsq <- performance::model_performance(fit_extract) %>% as_tibble() %>% pull(R2_marginal) %>%  round(.,2)
+  boot_mets <- fit2 %>% 
+    collect_metrics(summarize = FALSE) %>% 
+    filter(.metric == "rmse")
   
-  test_preds <- predict(fit2, group_test) %>% 
-    bind_cols(group_test) %>% 
-    select(all_of(dependent_variable), .pred)
+  boot_cis <- confintr::ci_mean(boot_mets$.estimate)
   
-  reg_metrics <- metric_set(rmse, rsq)
+  boot_mets_rsq <- fit2 %>% 
+    collect_metrics(summarize = FALSE) %>% 
+    filter(.metric == "rsq")
   
-  test_rmse <- test_preds %>% reg_metrics(test_preds[[dependent_variable]], .pred) %>% 
-    filter(.metric == "rmse") %>% pull(.estimate) %>% round(.,2)
+  boot_cis_rsq <- confintr::ci_mean(boot_mets_rsq$.estimate)
   
-  test_rsq <- test_preds %>% reg_metrics(test_preds[[dependent_variable]], .pred) %>% 
-    filter(.metric == "rsq") %>% pull(.estimate) %>% round(.,2)
+  
+  test_rmse <- fit_metrics %>% 
+    filter(.metric == "rmse") %>% pull(mean) %>% round(.,2)
+  
+  test_rsq <- fit_metrics %>% 
+    filter(.metric == "rsq") %>% pull(mean) %>% round(.,2)
+  
+  
   
   
   lmer_result_tbl <- tibble(model = "lmer",
@@ -62,15 +67,17 @@ fit_and_metrics_lmer_fn <- function(data){
                             vars = variables,
                             test_rmse = test_rmse,
                             test_rsq = test_rsq, 
-                            train_rmse = train_rmse,
-                            train_rsq = train_rsq) %>% 
+                            rmse_ci_low = round(boot_cis$interval[1],2),
+                            rmse_ci_high = round(boot_cis$interval[2],2),
+                            rsq_ci_low = round(boot_cis_rsq$interval[1],2),
+                            rsq_ci_high = round(boot_cis_rsq$interval[2],2),
+  ) %>% 
     mutate(
       across(model:vars, ~as.factor(.))
     )
   
   lmer_result_tbl
 }
-
 
 
 #
